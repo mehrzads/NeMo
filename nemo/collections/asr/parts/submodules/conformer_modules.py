@@ -18,7 +18,7 @@ from torch import nn as nn
 from torch.nn import LayerNorm
 
 from nemo.collections.asr.parts.submodules.batchnorm import FusedBatchNorm1d
-from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D
+from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D, CausalConv2D
 from nemo.collections.asr.parts.submodules.multi_head_attention import (
     MultiHeadAttention,
     RelPositionMultiHeadAttention,
@@ -30,8 +30,170 @@ from nemo.collections.common.parts.utils import activation_registry
 from nemo.core.classes.mixins import AccessMixin
 from nemo.core.classes.mixins.adapter_mixins import AdapterModuleMixin
 
-__all__ = ['ConformerConvolution', 'ConformerFeedForward', 'ConformerLayer']
+__all__ = ['ConformerConvolution', 'MNSConformerConvolution', 'ConformerFeedForward', 'ConformerLayer', 'MNSConformerLayer']
 
+class MNSConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
+    """A single block of the Conformer encoder.
+
+    Args:
+        d_model (int): input dimension of MultiheadAttentionMechanism and PositionwiseFeedForward
+        d_ff (int): hidden dimension of PositionwiseFeedForward
+        self_attention_model (str): type of the attention layer and positional encoding
+            'rel_pos': relative positional embedding and Transformer-XL
+            'rel_pos_local_attn': relative positional embedding and Transformer-XL with local attention using
+                overlapping chunks. Attention context is determined by att_context_size parameter.
+            'abs_pos': absolute positional embedding and Transformer
+            Default is rel_pos.
+        global_tokens (int): number of tokens to be used for global attention.d
+            Only relevant if self_attention_model is 'rel_pos_local_attn'.
+            Defaults to 0.
+        global_tokens_spacing (int): how far apart the global tokens are
+            Defaults to 1.
+        global_attn_separate (bool): whether the q, k, v layers used for global tokens should be separate.
+            Defaults to False.
+        n_heads (int): number of heads for multi-head attention
+        conv_kernel_size (int): kernel size for depthwise convolution in convolution module
+        dropout (float): dropout probabilities for linear layers
+        dropout_att (float): dropout probabilities for attention distributions
+    """
+
+    def __init__(
+        self,
+        d_model,
+        d_ff,
+        self_attention_model='rel_pos',
+        global_tokens=0,
+        global_tokens_spacing=1,
+        global_attn_separate=False,
+        n_heads=4,
+        conv_kernel_size=31,
+        conv_norm_type='batch_norm',
+        conv_context_size=None,
+        dropout=0.1,
+        dropout_att=0.1,
+        pos_bias_u=None,
+        pos_bias_v=None,
+        att_context_size=[-1, -1],
+    ):
+        super(MNSConformerLayer, self).__init__()
+        self.self_attention_model = self_attention_model
+        self.n_heads = n_heads        
+        self.fc_factor = 0.5
+
+        # first feed forward module
+        self.norm_feed_forward1 = LayerNorm([d_model,d_model])       
+        self.feed_forward1 = ConformerFeedForward(d_model=d_model ** 2, d_ff=d_ff, dropout=dropout)
+        self.dropout = nn.Dropout(dropout)
+
+        self.norm_conv = LayerNorm([d_model,d_model])
+        self.conv = MNSConformerConvolution(
+            d_model=d_model,
+            kernel_size=conv_kernel_size,
+            norm_type=conv_norm_type,
+            conv_context_size=conv_context_size,
+        )
+
+          # multi-headed self-attention module
+        self.norm_self_att = LayerNorm([d_model,d_model])
+        MHA_max_cache_len = att_context_size[0]
+
+        if self_attention_model == 'rel_pos':
+            self.self_attn = RelPositionMultiHeadAttention(
+                n_head=n_heads,
+                n_feat=d_model**2,
+                dropout_rate=dropout_att,
+                pos_bias_u=pos_bias_u,
+                pos_bias_v=pos_bias_v,
+                max_cache_len=MHA_max_cache_len,
+            )
+        elif self_attention_model == 'rel_pos_local_attn':
+            self.self_attn = RelPositionMultiHeadAttentionLongformer(
+                n_head=n_heads,
+                n_feat=d_model**2,
+                dropout_rate=dropout_att,
+                pos_bias_u=pos_bias_u,
+                pos_bias_v=pos_bias_v,
+                max_cache_len=MHA_max_cache_len,
+                att_context_size=att_context_size,
+                global_tokens=global_tokens,
+                global_tokens_spacing=global_tokens_spacing,
+                global_attn_separate=global_attn_separate,
+            )
+        elif self_attention_model == 'abs_pos':
+            self.self_attn = MultiHeadAttention(
+                n_head=n_heads, n_feat=d_model**2, dropout_rate=dropout_att, max_cache_len=MHA_max_cache_len
+            )
+        else:
+            raise ValueError(
+                f"'{self_attention_model}' is not not a valid value for 'self_attention_model', "
+                f"valid values can be from ['rel_pos', 'rel_pos_local_attn', 'abs_pos']"
+            )
+        
+        # second feed forward module
+        self.norm_feed_forward2 = LayerNorm([d_model,d_model])
+        self.feed_forward2 = ConformerFeedForward(d_model=d_model ** 2, d_ff=d_ff, dropout=dropout)
+
+        self.dropout = nn.Dropout(dropout)
+        self.norm_out = LayerNorm([d_model,d_model])
+
+    def forward(self, x, att_mask=None, pos_emb=None, pad_mask=None, cache_last_channel=None, cache_last_time=None):
+        """
+        Args:
+            x (torch.Tensor): input signals (B, T, d_model)
+            att_mask (torch.Tensor): attention masks(B, T, T)
+            pos_emb (torch.Tensor): (L, 1, d_model)
+            pad_mask (torch.tensor): padding mask
+            cache_last_channel (torch.tensor) : cache for MHA layers (B, T_cache, d_model)
+            cache_last_time (torch.tensor) : cache for convolutional layers (B, d_model, T_cache)
+        Returns:
+            x (torch.Tensor): (B, T, d_model)
+            cache_last_channel (torch.tensor) : next cache for MHA layers (B, T_cache, d_model)
+            cache_last_time (torch.tensor) : next cache for convolutional layers (B, d_model, T_cache)
+        """
+        residual = x
+        x = self.norm_feed_forward1(x)
+        b, c, t, f = x.size()
+        x = x.reshape(b, c, -1)
+        x = self.feed_forward1(x)
+        x = x.reshape(b, c, t, -1)
+        residual = residual + self.dropout(x) * self.fc_factor
+
+        x = self.norm_self_att(residual)
+        x = x.reshape(b, c, -1)
+        if self.self_attention_model == 'rel_pos':
+            x = self.self_attn(query=x, key=x, value=x, mask=att_mask, pos_emb=pos_emb, cache=cache_last_channel)
+        elif self.self_attention_model == 'rel_pos_local_attn':
+            x = self.self_attn(query=x, key=x, value=x, pad_mask=pad_mask, pos_emb=pos_emb, cache=cache_last_channel)
+        elif self.self_attention_model == 'abs_pos':
+            x = self.self_attn(query=x, key=x, value=x, mask=att_mask, cache=cache_last_channel)
+        else:
+            x = None
+        x = x.reshape(b, c, t, -1)
+
+        if x is not None and cache_last_channel is not None:
+            (x, cache_last_channel) = x
+
+        residual = residual + self.dropout(x)
+
+        x = self.norm_conv(residual)
+        x = self.conv(x, pad_mask=pad_mask, cache=cache_last_time)
+        #if cache_last_time is not None:
+        #    (x, cache_last_time) = x
+        #second feedforward
+        residual = residual + self.dropout(x)
+
+        x = self.norm_feed_forward2(residual)
+        x = x.reshape(b, c, -1)
+        x = self.feed_forward2(x)
+        x = x.reshape(b, c, t, -1)
+        residual = residual + self.dropout(x) * self.fc_factor
+
+        x = self.norm_out(residual)
+        
+
+        return x    
+
+ 
 
 class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
     """A single block of the Conformer encoder.
@@ -271,6 +433,115 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
 
         return input
 
+class MNSConformerConvolution(nn.Module):
+    """The convolution module for the Conformer model.
+    Args:
+        d_model (int): hidden dimension
+        kernel_size (int): kernel size for depthwise convolution
+        pointwise_activation (str): name of the activation function to be used for the pointwise conv.
+            Note that Conformer uses a special key `glu_` which is treated as the original default from
+            the paper.
+    """
+
+    def __init__(
+        self, d_model, kernel_size, norm_type='batch_norm', conv_context_size=None, pointwise_activation='glu_'):
+        super(MNSConformerConvolution, self).__init__()
+       
+        self.d_model = d_model
+        self.kernel_size = kernel_size
+        self.norm_type = norm_type 
+
+        if pointwise_activation in activation_registry:
+            self.pointwise_activation = activation_registry[pointwise_activation]()
+            dw_conv_input_dim = d_model * 2
+
+            if hasattr(self.pointwise_activation, 'inplace'):
+                self.pointwise_activation.inplace = True
+        else:
+            self.pointwise_activation = pointwise_activation
+            dw_conv_input_dim = d_model
+
+        self.pointwise_conv1 = nn.Conv2d(
+            in_channels=d_model, out_channels=d_model *  2, kernel_size=1, stride=1, padding=0, bias=True
+        )
+        
+        self.depthwise_conv = CausalConv2D(
+            in_channels=dw_conv_input_dim,
+            out_channels=dw_conv_input_dim,
+            kernel_size=kernel_size,
+            stride=1,
+            padding=None, #Padding should be None for Conv2D
+            groups=dw_conv_input_dim,
+            bias=True,
+        )
+
+        if norm_type == 'batch_norm':
+            self.batch_norm = nn.BatchNorm2d(dw_conv_input_dim)
+        elif norm_type == 'instance_norm':
+            self.batch_norm = nn.InstanceNorm2d(dw_conv_input_dim)
+        elif norm_type == 'layer_norm':
+            self.batch_norm = nn.LayerNorm(dw_conv_input_dim)
+        elif norm_type == 'fused_batch_norm':
+            raise ValueError(f"conv_norm_type={norm_type} is not valid for 2D!")
+        elif norm_type.startswith('group_norm'):
+            num_groups = int(norm_type.replace("group_norm", ""))
+            self.batch_norm = nn.GroupNorm(num_groups=num_groups, num_channels=d_model)
+        else:
+            raise ValueError(f"conv_norm_type={norm_type} is not valid!")
+        
+        self.activation = Swish()
+        self.pointwise_conv2 = nn.Conv2d(
+            in_channels=dw_conv_input_dim, out_channels=d_model, kernel_size=1, stride=1, padding=0, bias=True
+        )
+       
+
+    def forward(self, x, pad_mask=None, cache=None):
+        x = x.transpose(1, 2)
+        x = self.pointwise_conv1(x)
+
+            # Compute the activation function or use GLU for original Conformer
+        if self.pointwise_activation == 'glu_':
+            x = nn.functional.glu(x, dim=1)
+        else:
+            x = self.pointwise_activation(x)
+
+        #check this! It looks wrong
+        if pad_mask is not None:
+#            b, c, t, f = x.size()
+#            x = x.reshape(b, c, -1)
+            x = x.float().masked_fill(pad_mask.unsqueeze(1).unsqueeze(3), 0.0)
+#            x = x.reshape(b, c, t, -1)
+
+        x = self.depthwise_conv(x)
+        if cache is not None:
+            x, cache = x
+
+        if self.norm_type == "layer_norm":
+            x = x.transpose(1, 2)
+            x = self.batch_norm(x)
+            x = x.transpose(1, 2)
+        else:
+            x = self.batch_norm(x)
+
+        x = self.activation(x)
+        x = self.pointwise_conv2(x)
+        x = x.transpose(1, 2)
+        if cache is None:
+            return x
+        else:
+            return x, cache
+        
+    def reset_parameters_conv(self):
+        pw1_max = pw2_max = self.d_model ** -0.5
+        dw_max = self.kernel_size ** -0.5
+
+        with torch.no_grad():
+            nn.init.uniform_(self.pointwise_conv1.weight, -pw1_max, pw1_max)
+            nn.init.uniform_(self.pointwise_conv1.bias, -pw1_max, pw1_max)
+            nn.init.uniform_(self.pointwise_conv2.weight, -pw2_max, pw2_max)
+            nn.init.uniform_(self.pointwise_conv2.bias, -pw2_max, pw2_max)
+            nn.init.uniform_(self.depthwise_conv.weight, -dw_max, dw_max)
+            nn.init.uniform_(self.depthwise_conv.bias, -dw_max, dw_max)
 
 class ConformerConvolution(nn.Module):
     """The convolution module for the Conformer model.

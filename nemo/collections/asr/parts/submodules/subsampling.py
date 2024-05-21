@@ -84,12 +84,14 @@ class ConvSubsampling(torch.nn.Module):
         subsampling_conv_chunking_factor=1,
         activation=nn.ReLU(),
         is_causal=False,
+        is_2d=False,
     ):
         super(ConvSubsampling, self).__init__()
         self._subsampling = subsampling
         self._conv_channels = conv_channels
         self._feat_in = feat_in
         self._feat_out = feat_out
+        self._is_2d = is_2d
 
         if subsampling_factor % 2 != 0:
             raise ValueError("Sampling factor should be a multiply of 2!")
@@ -366,7 +368,10 @@ class ConvSubsampling(torch.nn.Module):
                 ceil_mode=self._ceil_mode,
                 repeat_num=self._sampling_num,
             )
-            self.out = torch.nn.Linear(conv_channels * int(out_length), feat_out)
+            final_feat_out = feat_out
+            if is_2d:
+                final_feat_out = feat_out ** 2
+            self.out = torch.nn.Linear(conv_channels * int(out_length), final_feat_out)                
             self.conv2d_subsampling = True
         elif subsampling in ["striding_conv1d", "dw_striding_conv1d"]:
             self.out = None
@@ -430,6 +435,8 @@ class ConvSubsampling(torch.nn.Module):
         if self.conv2d_subsampling:
             b, c, t, f = x.size()
             x = self.out(x.transpose(1, 2).reshape(b, t, -1))
+            if self._is_2d:
+                x = x.reshape(b, t, self._feat_out, -1)
         # Transpose to Channel Last mode
         else:
             x = x.transpose(1, 2)

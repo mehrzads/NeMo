@@ -45,6 +45,7 @@ from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 
+from normalizer import data_utils
 """
 Transcribe audio file on a single CPU/GPU. Useful for transcription of moderate amounts of audio data.
 
@@ -200,6 +201,44 @@ class TranscriptionConfig:
     # Your manifest input should have `offset` field to use transcribe_partial_audio()
     allow_partial_transcribe: bool = False
     extract_nbest: bool = False  # Extract n-best hypotheses from the model
+
+def write_normalize(pred_manifest: str = None,
+                    gt_text_attr_name: str = "text",
+                    pred_text_attr_name: str = "pred_text"):
+    out = open(pred_manifest + "_out", 'w', encoding='utf-8', newline='\n')
+    with open(pred_manifest, 'r') as fp:
+        for line in fp:
+            sample = json.loads(line)
+            hyp = sample[pred_text_attr_name].strip()
+            ref = sample[gt_text_attr_name].strip()
+            if hyp!= ref:                
+                sample[pred_text_attr_name] = data_utils.normalizer(hyp)
+                sample[gt_text_attr_name] = data_utils.normalizer(ref)
+            out.write(json.dumps(sample) + "\n")
+    return pred_manifest + "_out"
+
+def extract_time(json):
+    try:
+        # Also convert to int since update_time will be string.  When comparing
+        # strings, "10" is smaller than "2".
+        return json['wer']
+    except KeyError:
+        return 0
+
+def evaluate_wer(pred_manifest: str = None,
+                 gt_text_attr_name: str = "text",
+                 pred_text_attr_name: str = "pred_text"):   
+    samples = []             
+    with open(pred_manifest, 'r') as fp:
+        for line in fp:
+            sample = json.loads(line)            
+            samples.append(sample)
+    samples.sort(key=extract_time, reverse=True)
+    for i in range(10):
+        sample = samples[i]
+        print(f"{sample['wer']}, {os.path.basename(sample['audio_filepath'])}, {sample['text']}, {sample['pred_text']}")
+
+
 
 
 @hydra_runner(config_name="TranscriptionConfig", schema=TranscriptionConfig)
@@ -447,6 +486,10 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
     )
     logging.info(f"Finished writing predictions to {output_filename}!")
 
+
+    output_filename = write_normalize(output_filename)
+
+
     # clean-up
     if cfg.presort_manifest is not None:
         if remove_path_after_done is not None:
@@ -465,6 +508,8 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
         if output_manifest_w_wer:
             logging.info(f"Writing prediction and error rate of each sample to {output_manifest_w_wer}!")
             logging.info(f"{total_res}")
+            
+    evaluate_wer(output_filename)
 
     return cfg
 
