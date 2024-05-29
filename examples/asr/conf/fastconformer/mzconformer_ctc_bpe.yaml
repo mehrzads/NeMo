@@ -157,7 +157,7 @@ model:
 
   decoder:
     _target_: nemo.collections.asr.modules.ConvASRDecoder
-    feat_in: 1024
+    feat_in: 512
     num_classes: -1
     vocabulary: []
 

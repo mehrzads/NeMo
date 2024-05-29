@@ -294,8 +294,10 @@ class MNSConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixi
         global_attn_separate: bool = False,
     ):
         super().__init__()
-        d_ff = d_model * ff_expansion_factor
+        d_ff = d_model * d_model * ff_expansion_factor
         self.d_model = d_model
+        self.d_1d_model = 512
+        d_ff_1d = self.d_1d_model * ff_expansion_factor
         self.n_layers = n_layers
         self._feat_in = feat_in
         self.att_context_style = att_context_style
@@ -408,8 +410,37 @@ class MNSConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixi
         else:
             raise ValueError(f"Not valid self_attention_model: '{self_attention_model}'!")
         
+        if self_attention_model == "rel_pos":
+            self.pos_enc_1d = RelPositionalEncoding(
+                d_model=self.d_1d_model,
+                dropout_rate=dropout_pre_encoder,
+                max_len=pos_emb_max_len,
+                xscale=self.xscale,
+                dropout_rate_emb=dropout_emb,
+            )
+        elif self_attention_model == 'rel_pos_local_attn':
+            if max(att_context_size) <= 0:
+                raise ValueError("When using local attention, context size must be set > 0")
+            self.pos_enc_1d = LocalAttRelPositionalEncoding(
+                att_context_size=att_context_size,
+                d_model=self.d_1d_model,
+                dropout_rate=dropout,
+                max_len=pos_emb_max_len,
+                xscale=self.xscale,
+                dropout_rate_emb=dropout_emb,
+            )
+        elif self_attention_model == "abs_pos":
+            pos_bias_u = None
+            pos_bias_v = None
+            self.pos_enc_1d = PositionalEncoding(
+                d_model=self.d_1d_model, dropout_rate=dropout_pre_encoder, max_len=pos_emb_max_len, xscale=self.xscale
+            )
+        else:
+            raise ValueError(f"Not valid self_attention_model: '{self_attention_model}'!")
+        
+        self.convert =  nn.Linear(d_model ** 2, self.d_1d_model)
         self.layers2D = nn.ModuleList()
-        for i in range(n_layers):
+        for i in range(4):
             layer = MNSConformerLayer(
                 d_model=d_model,
                 d_ff=d_ff,
@@ -432,8 +463,8 @@ class MNSConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixi
         self.layers = nn.ModuleList()
         for i in range(n_layers):
             layer = ConformerLayer(
-                d_model=d_model**2,
-                d_ff=d_ff,
+                d_model=self.d_1d_model,
+                d_ff=d_ff_1d,
                 self_attention_model=self_attention_model,
                 global_tokens=global_tokens,
                 global_tokens_spacing=global_tokens_spacing,
@@ -662,6 +693,8 @@ class MNSConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixi
 
         b, c, t, f = audio_signal.size()
         audio_signal = audio_signal.reshape(b, c, -1)
+        audio_signal = self.convert(audio_signal)
+        audio_signal, pos_emb_1d = self.pos_enc_1d(x=audio_signal, cache_len=cache_len)
 
         for lth, (drop_prob, layer) in enumerate(zip(self.layer_drop_probs, self.layers)):
             original_signal = audio_signal
@@ -674,7 +707,7 @@ class MNSConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixi
             audio_signal = layer(
                 x=audio_signal,
                 att_mask=att_mask,
-                pos_emb=pos_emb,
+                pos_emb=pos_emb_1d,
                 pad_mask=pad_mask,
                 cache_last_channel=cache_last_channel_cur,
                 cache_last_time=cache_last_time_cur,
@@ -770,6 +803,8 @@ class MNSConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixi
         self.max_audio_length = max_audio_length
         device = next(self.parameters()).device
         self.pos_enc.extend_pe(max_audio_length, device)
+        self.pos_enc_1d.extend_pe(max_audio_length, device)
+
 
     def _create_masks(self, att_context_size, padding_length, max_audio_length, offset, device):
         if self.self_attention_model != "rel_pos_local_attn":
