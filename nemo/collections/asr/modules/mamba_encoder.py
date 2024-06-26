@@ -416,11 +416,13 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         '''    
         self.norm_f = nn.LayerNorm(d_model, eps=1e-5)
         self.layers = nn.ModuleList()
+        ssm_cfg = {"expand": 8}
         for i in range(n_layers):
             
             layer = create_block(
                     d_model,
-                    0
+                    d_intermediate=0,
+                    ssm_cfg=ssm_cfg
                 )
             '''
             layer = ConformerLayer(
