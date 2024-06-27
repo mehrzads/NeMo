@@ -458,7 +458,8 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                     d_intermediate,
                     ssm_cfg=ssm_cfg,
                     device="cuda",
-                    dtype=torch.bfloat16
+                    dtype=torch.float32,
+                    residual_in_fp32=True
                 )            
             self.layers.append(layer)
         
