@@ -115,7 +115,7 @@ model:
     _target_: nemo.collections.asr.modules.MambaEncoder
     feat_in: ${model.preprocessor.features}
     feat_out: -1 # you may set it if you need different output size other than the default d_model
-    n_layers: 17 
+    n_layers: 48 
     d_model: 512
 
     # Sub-sampling params
