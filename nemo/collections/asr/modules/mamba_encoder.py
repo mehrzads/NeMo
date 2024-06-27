@@ -17,6 +17,7 @@ import random
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import List, Optional, Set, Tuple
+from functools import partial
 
 import torch
 import torch.distributed
@@ -52,6 +53,37 @@ from nemo.utils import logging
 from mamba_ssm.models.mixer_seq_simple import create_block
 
 __all__ = ['MambaEncoder']
+
+def _init_weights(
+    module,
+    n_layer,
+    initializer_range=0.02,  # Now only used for embedding layer.
+    rescale_prenorm_residual=True,
+    n_residuals_per_layer=1,  # Change to 2 if we have MLP
+):
+    if isinstance(module, nn.Linear):
+        if module.bias is not None:
+            if not getattr(module.bias, "_no_reinit", False):
+                nn.init.zeros_(module.bias)
+    elif isinstance(module, nn.Embedding):
+        nn.init.normal_(module.weight, std=initializer_range)
+
+    if rescale_prenorm_residual:
+        # Reinitialize selected weights subject to the OpenAI GPT-2 Paper Scheme:
+        #   > A modified initialization which accounts for the accumulation on the residual path with model depth. Scale
+        #   > the weights of residual layers at initialization by a factor of 1/√N where N is the # of residual layers.
+        #   >   -- GPT-2 :: https://openai.com/blog/better-language-models/
+        #
+        # Reference (Megatron-LM): https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/model/gpt_model.py
+        for name, p in module.named_parameters():
+            if name in ["out_proj.weight", "fc2.weight"]:
+                # Special Scaled Initialization --> There are 2 Layer Norms per Transformer Block
+                # Following Pytorch init, except scale by 1/sqrt(2 * n_layer)
+                # We need to reinit p since this code could be called multiple times
+                # Having just p *= scale would repeatedly scale it down
+                nn.init.kaiming_uniform_(p, a=math.sqrt(5))
+                with torch.no_grad():
+                    p /= math.sqrt(n_residuals_per_layer * n_layer)
 
 
 class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
@@ -417,34 +449,27 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         self.norm_f = nn.LayerNorm(d_model, eps=1e-5)
         self.layers = nn.ModuleList()
         ssm_cfg = {"expand": 2, "d_state": 16}
+        d_intermediate = d_model
+        initializer_cfg = None
         for i in range(n_layers):
             
             layer = create_block(
                     d_model,
-                    d_intermediate=d_model,
-                    ssm_cfg=ssm_cfg
-                )
-            '''
-            layer = ConformerLayer(
-                d_model=d_model,
-                d_ff=d_ff,
-                self_attention_model=self_attention_model,
-                global_tokens=global_tokens,
-                global_tokens_spacing=global_tokens_spacing,
-                global_attn_separate=global_attn_separate,
-                n_heads=n_heads,
-                conv_kernel_size=conv_kernel_size,
-                conv_norm_type=conv_norm_type,
-                conv_context_size=self.conv_context_size,
-                dropout=dropout,
-                dropout_att=dropout_att,
-                pos_bias_u=pos_bias_u,
-                pos_bias_v=pos_bias_v,
-                att_context_size=self.att_context_size,
-                use_bias=use_bias,
-            )
-            '''
+                    d_intermediate,
+                    ssm_cfg=ssm_cfg,
+                    device="cuda",
+                    dtype=torch.bfloat16
+                )            
             self.layers.append(layer)
+        
+        self.apply(
+            partial(
+                _init_weights,
+                n_layer=n_layers,
+                **(initializer_cfg if initializer_cfg is not None else {}),
+                n_residuals_per_layer=1 if d_intermediate == 0 else 2,  # 2 if we have MLP
+            )
+        )
         
 
         if feat_out > 0 and feat_out != self._feat_out:
@@ -611,78 +636,12 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             )
                    
 
-
-            if cache_last_channel_cur is not None:
-                (audio_signal, cache_last_channel_cur, cache_last_time_cur) = audio_signal
-                cache_last_channel_next.append(cache_last_channel_cur)
-                cache_last_time_next.append(cache_last_time_cur)
-
-            # applying stochastic depth logic from https://arxiv.org/abs/2102.03216
-            if self.training and drop_prob > 0.0:
-                should_drop = torch.rand(1) < drop_prob
-                # adjusting to match expectation
-                if should_drop:
-                    # that's not efficient, but it's hard to implement distributed
-                    # version of dropping layers without deadlock or random seed meddling
-                    # so multiplying the signal by 0 to ensure all weights get gradients
-                    audio_signal = audio_signal * 0.0 + original_signal
-                else:
-                    # not doing this operation if drop prob is 0 as it's identity in that case
-                    audio_signal = (audio_signal - original_signal) / (1.0 - drop_prob) + original_signal
-            '''
-            if self.reduction_position == lth:
-                audio_signal, length = self.reduction_subsampling(x=audio_signal, lengths=length)
-                max_audio_length = audio_signal.size(1)
-                # Don't update the audio_signal here because then it will again scale the audio_signal
-                # and cause an increase in the WER
-                _, pos_emb = self.pos_enc(x=audio_signal, cache_len=cache_len)
-                pad_mask, att_mask = self._create_masks(
-                    att_context_size=cur_att_context_size,
-                    padding_length=length,
-                    max_audio_length=max_audio_length,
-                    offset=offset,
-                    device=audio_signal.device,
-                )
-            '''
-            # saving tensors if required for interctc loss
-            if self.is_access_enabled(getattr(self, "model_guid", None)):
-                if self.interctc_capture_at_layers is None:
-                    self.interctc_capture_at_layers = self.access_cfg.get('interctc', {}).get('capture_layers', [])
-                if lth in self.interctc_capture_at_layers:
-                    lth_audio_signal = audio_signal
-                    if self.out_proj is not None:
-                        lth_audio_signal = self.out_proj(audio_signal)
-                    # shape is the same as the shape of audio_signal output, i.e. [B, D, T]
-                    self.register_accessible_tensor(
-                        name=f'interctc/layer_output_{lth}', tensor=torch.transpose(lth_audio_signal, 1, 2)
-                    )
-                    self.register_accessible_tensor(name=f'interctc/layer_length_{lth}', tensor=length)
-
-        if self.out_proj is not None:
-            audio_signal = self.out_proj(audio_signal)
-
-        # Reduction
-        if self.reduction_position == -1:
-            audio_signal, length = self.reduction_subsampling(x=audio_signal, lengths=length)
-
         residual = (audio_signal + residual) if residual is not None else audio_signal
         audio_signal = self.norm_f(residual.to(dtype=self.norm_f.weight.dtype))
 
         audio_signal = torch.transpose(audio_signal, 1, 2)
-        length = length.to(dtype=torch.int64)
-
-        if cache_last_channel is not None:
-            cache_last_channel_next = torch.stack(cache_last_channel_next, dim=0)
-            cache_last_time_next = torch.stack(cache_last_time_next, dim=0)
-            return (
-                audio_signal,
-                length,
-                cache_last_channel_next,
-                cache_last_time_next,
-                torch.clamp(cache_last_channel_len + cache_keep_size, max=cache_len),
-            )
-        else:
-            return audio_signal, length
+        length = length.to(dtype=torch.int64)      
+        return audio_signal, length
 
     def update_max_seq_length(self, seq_length: int, device):
         # Find global max audio length across all nodes
