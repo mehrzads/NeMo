@@ -456,10 +456,9 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             layer = create_block(
                     d_model,
                     d_intermediate,
-                    ssm_cfg=ssm_cfg,
-                    device="cuda",
-                    dtype=torch.float32,
-                    residual_in_fp32=True
+                    ssm_cfg=ssm_cfg,                    
+                    residual_in_fp32=False,
+                    rms_norm=True
                 )            
             self.layers.append(layer)
         
