@@ -417,7 +417,7 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
 
         # Positional encodings
         self.pos_emb_max_len = pos_emb_max_len
-        '''
+        
         if self_attention_model == "rel_pos":
             self.pos_enc = RelPositionalEncoding(
                 d_model=d_model,
@@ -445,20 +445,29 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             )
         else:
             raise ValueError(f"Not valid self_attention_model: '{self_attention_model}'!")
-        '''    
+        
+       
+        self.set_max_audio_length(self.pos_emb_max_len)
         self.norm_f = nn.LayerNorm(d_model, eps=1e-5)
         self.layers = nn.ModuleList()
-        ssm_cfg = {"expand": 2, "d_state": 16}
+        ssm_cfg = {"expand": 2, "d_state": 16, "layer": "Mamba2"}
+        attn_cfg ={"num_heads": 8}
         d_intermediate = d_model
+        #attn_layer_idx = {0, 6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66}
+        #attn_layer_idx = {0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64}
+        attn_layer_idx = {0, 8, 16, 24, 32, 40, 48, 56, 64}
         initializer_cfg = None
         for i in range(n_layers):
             
             layer = create_block(
                     d_model,
                     d_intermediate,
+                    attn_layer_idx=attn_layer_idx,
+                    layer_idx=i,
                     ssm_cfg=ssm_cfg,                    
+                    attn_cfg=attn_cfg,
                     residual_in_fp32=False,
-                    rms_norm=True
+                    rms_norm=False
                 )            
             self.layers.append(layer)
         
@@ -551,6 +560,7 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
     def forward_internal(
         self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
     ):
+        #print(f"first thing: {torch.mean(audio_signal):.2e}, {torch.std(audio_signal):.2e}, {torch.max(audio_signal):.2e}, {torch.min(audio_signal):.2e}")
         self.update_max_seq_length(seq_length=audio_signal.size(2), device=audio_signal.device)
 
         if length is None:
@@ -593,7 +603,10 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             cache_len = 0
             offset = None
         
-        #audio_signal, pos_emb = self.pos_enc(x=audio_signal, cache_len=cache_len)
+#        audio_signal, pos_emb = self.pos_enc(x=audio_signal, cache_len=cache_len)
+        # This is happening in pos_enc
+        if self.xscale:
+            audio_signal = audio_signal * self.xscale
 
         # Create the self-attention and padding masks
         pad_mask, att_mask = self._create_masks(
@@ -613,6 +626,7 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             cache_last_channel_next = []
         
         residual = None
+        #print(f"befor layer: {torch.mean(audio_signal):.2e}, {torch.std(audio_signal):.2e}, {torch.max(audio_signal):.2e}, {torch.min(audio_signal):.2e}")
         for lth, (drop_prob, layer) in enumerate(zip(self.layer_drop_probs, self.layers)):
             original_signal = audio_signal
             if cache_last_channel is not None:
@@ -634,6 +648,8 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             audio_signal, residual = layer(
                 audio_signal, residual
             )
+            #print(f"layer {lth}: {torch.mean(audio_signal):.2e}, {torch.std(audio_signal):.2e}, {torch.max(audio_signal):.2e}, {torch.min(audio_signal):.2e}")
+
                    
 
         residual = (audio_signal + residual) if residual is not None else audio_signal
@@ -664,7 +680,7 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         self.max_audio_length = max_audio_length
         device = next(self.parameters()).device
         dtype = next(self.parameters()).dtype
-        #self.pos_enc.extend_pe(max_audio_length, device, dtype)
+        self.pos_enc.extend_pe(max_audio_length, device, dtype)
 
     def _create_masks(self, att_context_size, padding_length, max_audio_length, offset, device):
         if self.self_attention_model != "rel_pos_local_attn":
