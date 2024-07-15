@@ -609,8 +609,9 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             cache_last_channel_next = None
             cache_len = 0
             offset = None
-        
-        audio_signal, pos_emb = self.pos_enc(x=audio_signal, cache_len=cache_len)
+            
+        if self.xscale:
+            audio_signal = audio_signal * self.xscale
 
         # Create the self-attention and padding masks
         pad_mask, att_mask = self._create_masks(
@@ -629,32 +630,18 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             cache_last_time_next = []
             cache_last_channel_next = []
         
-        residual = None
-        #print(f"befor layer: {torch.mean(audio_signal):.2e}, {torch.std(audio_signal):.2e}, {torch.max(audio_signal):.2e}, {torch.min(audio_signal):.2e}")
-        for lth, (drop_prob, layer) in enumerate(zip(self.layer_drop_probs, self.layers)):
-            original_signal = audio_signal
-            if cache_last_channel is not None:
-                cache_last_channel_cur = cache_last_channel[lth]
-                cache_last_time_cur = cache_last_time[lth]
-            else:
-                cache_last_channel_cur = None
-                cache_last_time_cur = None
-            '''    
-            audio_signal = layer(
-                x=audio_signal,
-                att_mask=att_mask,
-                pos_emb=pos_emb,
-                pad_mask=pad_mask,
-                cache_last_channel=cache_last_channel_cur,
-                cache_last_time=cache_last_time_cur,
-            )
-            '''
+        residual = None  
+        attn_residual = None      
+        for lth, (drop_prob, layer) in enumerate(zip(self.layer_drop_probs, self.layers)):                    
+            if lth in self.attn_layer_idx:
+                residual = (attn_residual + residual) if attn_residual is not None else residual
+
             audio_signal, residual = layer(
                 audio_signal, residual
             )
-            #print(f"layer {lth}: {torch.mean(audio_signal):.2e}, {torch.std(audio_signal):.2e}, {torch.max(audio_signal):.2e}, {torch.min(audio_signal):.2e}")
-
-                   
+            
+            if lth in self.attn_layer_idx:
+                attn_residual = audio_signal                   
 
         residual = (audio_signal + residual) if residual is not None else audio_signal
         audio_signal = self.norm_f(residual.to(dtype=self.norm_f.weight.dtype))
