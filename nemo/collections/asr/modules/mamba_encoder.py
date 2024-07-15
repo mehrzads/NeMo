@@ -298,6 +298,7 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         n_layers,
         d_model,
         feat_out=-1,
+        attn_skip=-1,
         causal_downsampling=False,
         subsampling='striding',
         subsampling_factor=4,
@@ -338,7 +339,7 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         self.att_context_style = att_context_style
         self.subsampling_factor = subsampling_factor
         self.subsampling_conv_chunking_factor = subsampling_conv_chunking_factor
-
+        self.attn_skip = attn_skip
         self.self_attention_model = self_attention_model
         self.global_tokens = global_tokens
         self.global_attn_separate = global_attn_separate
@@ -450,15 +451,28 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         self.set_max_audio_length(self.pos_emb_max_len)
         self.norm_f = nn.LayerNorm(d_model, eps=1e-5)
         self.layers = nn.ModuleList()
-        ssm_cfg = {"expand": 2, "d_state": 16}
-        d_intermediate = d_model
+        ssm_cfg = {"expand": 2, "d_state": 16, "layer": "Mamba1"}
+        attn_cfg ={"num_heads": 8}
+        d_intermediate = 0
+        #d_model
+        #self.attn_layer_idx = {0, 6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66} 
+        if attn_skip > 0:
+            self.attn_layer_idx  = {num for num in range(n_layers + 1) if num % self.attn_skip == 0}
+        else:
+            self.attn_layer_idx = {}
+        print(f"yes we did {self.attn_layer_idx}")
+
+        #self.attn_layer_idx = {0, 8, 16, 24, 32, 40, 48, 56, 64}
         initializer_cfg = None
         for i in range(n_layers):
             
             layer = create_block(
                     d_model,
                     d_intermediate,
-                    ssm_cfg=ssm_cfg,                    
+                    attn_layer_idx=self.attn_layer_idx,
+                    layer_idx=i,
+                    ssm_cfg=ssm_cfg, 
+                    attn_cfg=attn_cfg,                   
                     residual_in_fp32=False,
                     rms_norm=False
                 )            

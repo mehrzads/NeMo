@@ -117,6 +117,7 @@ model:
     feat_out: -1 # you may set it if you need different output size other than the default d_model
     n_layers: 48 
     d_model: 512
+    attn_skip: -1 # if it is -1, all layers will be mamba but if it is n, each nth layer will be attention layer
 
     # Sub-sampling params
     subsampling: dw_striding # vggnet, striding, stacking or stacking_norm, dw_striding
