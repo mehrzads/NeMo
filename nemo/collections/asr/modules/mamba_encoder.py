@@ -453,14 +453,13 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         self.layers = nn.ModuleList()
         ssm_cfg = {"expand": 2, "d_state": 16, "layer": "Mamba1"}
         attn_cfg ={"num_heads": 8}
-        d_intermediate = 0
-        #d_model
+        d_intermediate = d_model
         #self.attn_layer_idx = {0, 6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66} 
         if attn_skip > 0:
             self.attn_layer_idx  = {num for num in range(n_layers + 1) if num % self.attn_skip == 0}
         else:
             self.attn_layer_idx = {}
-        print(f"yes we did {self.attn_layer_idx}")
+        
 
         #self.attn_layer_idx = {0, 8, 16, 24, 32, 40, 48, 56, 64}
         initializer_cfg = None
@@ -636,12 +635,13 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             if lth in self.attn_layer_idx:
                 residual = (attn_residual + residual) if attn_residual is not None else residual
 
-            audio_signal, residual = layer(
-                audio_signal, residual
+            audio_signal = layer(
+                audio_signal
             )
             
             if lth in self.attn_layer_idx:
-                attn_residual = audio_signal                   
+                attn_residual = None # audio_signal                   
+            residual = None
 
         residual = (audio_signal + residual) if residual is not None else audio_signal
         audio_signal = self.norm_f(residual.to(dtype=self.norm_f.weight.dtype))
