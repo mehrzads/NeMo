@@ -118,6 +118,9 @@ model:
     n_layers: 48 
     d_model: 512
     attn_skip: -1 # if it is -1, all layers will be mamba but if it is n, each nth layer will be attention layer
+    expand: 2
+    d_state: 16
+    d_conv: 4
 
     # Sub-sampling params
     subsampling: dw_striding # vggnet, striding, stacking or stacking_norm, dw_striding

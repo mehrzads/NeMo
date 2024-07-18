@@ -299,6 +299,9 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         d_model,
         feat_out=-1,
         attn_skip=-1,
+        expand=2,
+        d_state=16,
+        d_conv=4,
         causal_downsampling=False,
         subsampling='striding',
         subsampling_factor=4,
@@ -340,6 +343,9 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         self.subsampling_factor = subsampling_factor
         self.subsampling_conv_chunking_factor = subsampling_conv_chunking_factor
         self.attn_skip = attn_skip
+        self.expand = expand
+        self.d_conv = d_conv
+        self.d_state = d_state
         self.self_attention_model = self_attention_model
         self.global_tokens = global_tokens
         self.global_attn_separate = global_attn_separate
@@ -451,7 +457,7 @@ class MambaEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         self.set_max_audio_length(self.pos_emb_max_len)
         self.norm_f = nn.LayerNorm(d_model, eps=1e-5)
         self.layers = nn.ModuleList()
-        ssm_cfg = {"expand": 2, "d_state": 16, "layer": "Mamba1"}
+        ssm_cfg = {"expand": self.expand, "d_state": self.d_state, "d_conv": self.d_conv, "layer": "Mamba1"}
         attn_cfg ={"num_heads": 8}
         d_intermediate = d_model
         #self.attn_layer_idx = {0, 6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66} 
