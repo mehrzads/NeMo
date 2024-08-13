@@ -196,6 +196,7 @@ class MemConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
         x = self.norm_feed_forward1(x)
         x = self.feed_forward1(x)
         residual = residual + self.dropout(x) * self.fc_factor
+        residual =  self.mamba(residual)
 
         x = self.norm_self_att(residual)
         if self.self_attention_model == 'rel_pos':
@@ -211,7 +212,6 @@ class MemConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
             (x, cache_last_channel) = x
 
         residual = residual + self.dropout(x)
-        residual =  self.mamba(residual)
         x = self.norm_conv(residual)
 
         if self.is_adapter_available():
