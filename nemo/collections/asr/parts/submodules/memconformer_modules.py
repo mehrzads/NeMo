@@ -30,7 +30,7 @@ from nemo.collections.common.parts.utils import activation_registry
 from nemo.core.classes.mixins import AccessMixin
 from nemo.core.classes.mixins.adapter_mixins import AdapterModuleMixin
 
-from mamba_ssm.models.mixer_seq_simple import create_block
+from mamba_ssm.models.mixer_seq_simple import create_ssmblock
 
 
 __all__ = ['MemConformerConvolution', 'MemConformerFeedForward', 'MemConformerLayer']
@@ -164,7 +164,7 @@ class MemConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
         #d_model
         self.attn_layer_idx = {}        
         initializer_cfg = None
-        self.mamba = create_block(
+        self.mamba = create_ssmblock(
                     d_model,
                     d_intermediate,
                     attn_layer_idx=self.attn_layer_idx,

@@ -80,6 +80,7 @@ from nemo.collections.asr.parts.utils.transcribe_utils import (
 from nemo.collections.common.metrics.punct_er import DatasetPunctuationErrorRate
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
+from nemo.normalizer import data_utils
 
 
 @dataclass
@@ -159,6 +160,10 @@ def main(cfg: EvaluationConfig):
     if cfg.text_processing.rm_punctuation:
         ground_truth_text = pc.rm_punctuation(ground_truth_text)
         predicted_text = pc.rm_punctuation(predicted_text)
+    
+    ground_truth_text = [data_utils.normalizer(line)  for line in ground_truth_text]
+    predicted_text = [data_utils.normalizer(line)  for line in predicted_text]
+
 
     # Test for invalid manifest supplied
     if invalid_manifest:
