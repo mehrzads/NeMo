@@ -22,6 +22,7 @@ from torchmetrics.text.rouge import ROUGEScore
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.utils import logging
 from nemo.utils.nemo_logging import LogMode
+from nemo.normalizer import data_utils
 
 TEXT_METRICS_MAPPING = {
     'bleu': SacreBLEUScore,
@@ -201,6 +202,9 @@ def cal_write_wer(
             elif strip_punc_space:
                 ref = strip_spaces_before_punctuations(ref)
                 hyp = strip_spaces_before_punctuations(hyp)
+
+            ref = data_utils.normalizer(ref)
+            hyp = data_utils.normalizer(hyp)
 
             if ignore_capitalization:
                 ref = ref.lower()
