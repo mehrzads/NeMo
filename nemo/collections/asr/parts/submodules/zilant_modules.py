@@ -29,6 +29,7 @@ from nemo.collections.asr.parts.utils.activations import Swish
 from nemo.collections.common.parts.utils import activation_registry
 from nemo.core.classes.mixins import AccessMixin
 from mamba_ssm.models.mixer_seq_simple import create_ssmblock
+from nemo.collections.asr.parts.submodules.conformer_modules import ConformerConvolution, ConformerFeedForward
 
 __all__ = ['ZilantLayer']
 
