@@ -39,7 +39,7 @@
 # To increase the global batch size with limited number of GPUs, you may use higher accumulate_grad_batches.
 # However accumulate_grad_batches is better to be avoided as long as the global batch size is large enough and training is stable.
 
-name: "FastConformer-CTC-BPE"
+name: "Zilant-CTC-BPE"
 
 model:
   sample_rate: 16000
