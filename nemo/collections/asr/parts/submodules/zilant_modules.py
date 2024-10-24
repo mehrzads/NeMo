@@ -175,7 +175,7 @@ class ZilantLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
                     rms_norm=False
                 )                 
 
-    def forward(self, x, att_mask=None, pos_emb=None, pad_mask=None, cache_last_channel=None, cache_last_time=None):
+    def forward(self, x, att_mask=None, pos_emb=None, pad_mask=None, cache_last_channel=None, cache_last_time=None, cache_ssm=None, cache_conv=None):
         """
         Args:
             x (torch.Tensor): input signals (B, T, d_model)
@@ -193,7 +193,7 @@ class ZilantLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         x = self.norm_feed_forward1(x)
         x = self.feed_forward1(x)
         residual = residual + self.dropout(x) * self.fc_factor
-        residual =  self.mamba(residual)
+        residual, cache_ssm, cache_conv =  self.mamba(residual, cache_ssm=cache_ssm, cache_conv=cache_conv)
 
         x = self.norm_self_att(residual)
         if self.self_attention_model == 'rel_pos':
@@ -249,6 +249,6 @@ class ZilantLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         if cache_last_channel is None:
             return x
         else:
-            return x, cache_last_channel, cache_last_time
+            return x, cache_last_channel, cache_last_time, cache_ssm, cache_conv
 
 
