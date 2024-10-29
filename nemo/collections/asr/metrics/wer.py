@@ -23,6 +23,8 @@ from nemo.collections.asr.parts.submodules.ctc_decoding import AbstractCTCDecodi
 from nemo.collections.asr.parts.submodules.multitask_decoding import AbstractMultiTaskDecoding
 from nemo.collections.asr.parts.submodules.rnnt_decoding import AbstractRNNTDecoding
 from nemo.utils import logging
+from nemo.normalizer import data_utils
+
 
 __all__ = ['word_error_rate', 'word_error_rate_detail', 'WER']
 
@@ -55,6 +57,9 @@ def word_error_rate(hypotheses: List[str], references: List[str], use_cer=False)
             " lists must have the same number of elements. But I got:"
             "{0} and {1} correspondingly".format(len(hypotheses), len(references))
         )
+
+    hypotheses= [data_utils.normalizer(x) for x in hypotheses]            
+    references= [data_utils.normalizer(x) for x in references]    
     for h, r in zip(hypotheses, references):
         if use_cer:
             h_list = list(h)

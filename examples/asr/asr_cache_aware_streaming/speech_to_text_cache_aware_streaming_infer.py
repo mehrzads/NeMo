@@ -408,9 +408,11 @@ def main():
                     pad_and_drop_preencoded=args.pad_and_drop_preencoded,
                 )
                 all_streaming_tran.extend(streaming_tran)
-                if args.compare_vs_offline:
+                if args.compare_vs_offline:        
                     all_offline_tran.extend(offline_tran)
                 streaming_buffer.reset_buffer()
+
+        
 
         if args.compare_vs_offline and len(all_refs_text) == len(all_offline_tran):
             offline_wer = word_error_rate(hypotheses=all_offline_tran, references=all_refs_text)
