@@ -173,7 +173,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             input_example_length = torch.randint(
                 window_size // 4, window_size, (max_batch,), device=dev, dtype=torch.int64
             )
-            cache_last_channel, cache_last_time, cache_last_channel_len = self.get_initial_cache_state(
+            cache_last_channel, cache_last_time, cache_last_channel_len, cache_ssm, cache_conv = self.get_initial_cache_state(
                 batch_size=max_batch, device=dev, max_dim=max_dim
             )
             all_input_example = tuple(
@@ -202,6 +202,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 "cache_last_channel": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),
                 "cache_last_time": NeuralType(('D', 'B', 'D', 'T'), ChannelType(), optional=True),
                 "cache_last_channel_len": NeuralType(tuple('B'), LengthsType(), optional=True),
+                "cache_ssm": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),
+                "cache_conv": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),
+                
             }
         )
 
@@ -215,6 +218,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 "cache_last_channel": NeuralType(('B', 'D', 'T', 'D'), ChannelType(), optional=True),
                 "cache_last_time": NeuralType(('B', 'D', 'D', 'T'), ChannelType(), optional=True),
                 "cache_last_channel_len": NeuralType(tuple('B'), LengthsType(), optional=True),
+                "cache_ssm": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),
+                "cache_conv": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),
+
             }
         )
 
@@ -228,6 +234,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 "cache_last_channel_next": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),
                 "cache_last_time_next": NeuralType(('D', 'B', 'D', 'T'), ChannelType(), optional=True),
                 "cache_last_channel_next_len": NeuralType(tuple('B'), LengthsType(), optional=True),
+                "cache_ssm": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),
+                "cache_conv": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),
             }
         )
 
@@ -452,7 +460,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         self.interctc_capture_at_layers = None
 
     def forward_for_export(
-        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
+        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None, cache_ssm=None, cache_conv=None
     ):
         if cache_last_channel is not None:
             cache_last_channel = cache_last_channel.transpose(0, 1)
@@ -481,9 +489,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
 
     def streaming_post_process(self, rets, keep_all_outputs=True):
         if len(rets) == 2:
-            return rets[0], rets[1], None, None, None
+            return rets[0], rets[1], None, None, None, None, None
 
-        (encoded, encoded_len, cache_last_channel_next, cache_last_time_next, cache_last_channel_next_len) = rets
+        (encoded, encoded_len, cache_last_channel_next, cache_last_time_next, cache_last_channel_next_len, cache_ssm, cache_conv) = rets
 
         if cache_last_channel_next is not None and self.streaming_cfg.last_channel_cache_size >= 0:
             if self.streaming_cfg.last_channel_cache_size > 0:
@@ -495,11 +503,11 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             encoded = encoded[:, :, : self.streaming_cfg.valid_out_len]
             encoded_len = torch.clamp(encoded_len, max=self.streaming_cfg.valid_out_len)
 
-        return (encoded, encoded_len, cache_last_channel_next, cache_last_time_next, cache_last_channel_next_len)
+        return (encoded, encoded_len, cache_last_channel_next, cache_last_time_next, cache_last_channel_next_len, cache_ssm, cache_conv)
 
     @typecheck()
     def forward(
-        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
+        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None, cache_ssm=None, cache_conv=None
     ):
         self.update_max_seq_length(seq_length=audio_signal.size(2), device=audio_signal.device)
         return self.forward_internal(
@@ -508,10 +516,12 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             cache_last_channel=cache_last_channel,
             cache_last_time=cache_last_time,
             cache_last_channel_len=cache_last_channel_len,
+            cache_ssm=cache_ssm,
+            cache_conv=cache_conv,
         )
 
     def forward_internal(
-        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
+        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None, cache_ssm=None, cache_conv=None
     ):
         if length is None:
             length = audio_signal.new_full(
@@ -654,6 +664,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 cache_last_channel_next,
                 cache_last_time_next,
                 torch.clamp(cache_last_channel_len + cache_keep_size, max=cache_len),
+                cache_ssm,
+                cache_conv,
             )
         else:
             return audio_signal, length
@@ -938,7 +950,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                     cache_last_time[:, i, :, :] = 0
         else:
             cache_last_channel_len = torch.zeros(batch_size, device=device, dtype=torch.int64)
-        return cache_last_channel, cache_last_time, cache_last_channel_len
+        return cache_last_channel, cache_last_time, cache_last_channel_len, None, None
 
     def change_attention_model(
         self,

@@ -579,6 +579,8 @@ class ASRModuleMixin(ASRAdapterModelMixin):
         cache_last_channel: torch.Tensor = None,
         cache_last_time: torch.Tensor = None,
         cache_last_channel_len: torch.Tensor = None,
+        cache_ssm: torch.Tensor = None,
+        cache_conv: torch.Tensor = None,
         keep_all_outputs: bool = True,
         previous_hypotheses: List[Hypothesis] = None,
         previous_pred_out: torch.Tensor = None,
@@ -632,12 +634,16 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             cache_last_channel_next,
             cache_last_time_next,
             cache_last_channel_next_len,
+            cache_ssm,
+            cache_conv,
         ) = self.encoder.cache_aware_stream_step(
             processed_signal=processed_signal,
             processed_signal_length=processed_signal_length,
             cache_last_channel=cache_last_channel,
             cache_last_time=cache_last_time,
             cache_last_channel_len=cache_last_channel_len,
+            cache_ssm=cache_ssm,
+            cache_conv=cache_conv,
             keep_all_outputs=keep_all_outputs,
             drop_extra_pre_encoded=drop_extra_pre_encoded,
         )
@@ -702,6 +708,8 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             cache_last_channel_next,
             cache_last_time_next,
             cache_last_channel_next_len,
+            cache_ssm,
+            cache_conv,
             best_hyp,
         ]
         if return_log_probs:
@@ -754,7 +762,7 @@ class ASRModuleMixin(ASRAdapterModelMixin):
         for streaming_buffer in data_loader:
             streaming_buffer_iter = iter(streaming_buffer)
             batch_size = len(streaming_buffer.streams_length)
-            cache_last_channel, cache_last_time, cache_last_channel_len = self.encoder.get_initial_cache_state(
+            cache_last_channel, cache_last_time, cache_last_channel_len, cache_conv = self.encoder.get_initial_cache_state(
                 batch_size=batch_size
             )
             previous_hypotheses = None
@@ -772,6 +780,8 @@ class ASRModuleMixin(ASRAdapterModelMixin):
                         cache_last_channel=cache_last_channel,
                         cache_last_time=cache_last_time,
                         cache_last_channel_len=cache_last_channel_len,
+                        cache_ssm=cache_ssm,
+                        cache_conv=cache_conv,
                         keep_all_outputs=streaming_buffer.is_buffer_empty(),
                         previous_hypotheses=previous_hypotheses,
                         previous_pred_out=pred_out_stream,
@@ -786,6 +796,8 @@ class ASRModuleMixin(ASRAdapterModelMixin):
                             cache_last_channel,
                             cache_last_time,
                             cache_last_channel_len,
+                            cache_ssm,
+                            cache_conv,
                             previous_hypotheses,
                             cur_chunk_log_probs,
                             encoded_len,
@@ -798,6 +810,8 @@ class ASRModuleMixin(ASRAdapterModelMixin):
                             cache_last_channel,
                             cache_last_time,
                             cache_last_channel_len,
+                            cache_ssm,
+                            cache_conv,
                             previous_hypotheses,
                         ) = result
 

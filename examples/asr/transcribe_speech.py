@@ -398,6 +398,9 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
             override_cfg.lang_field = cfg.gt_lang_attr_name
             if hasattr(override_cfg, "prompt"):
                 override_cfg.prompt = parse_multitask_prompt(OmegaConf.to_container(cfg.prompt))
+            asr_model.cfg.decoding.strategy = "greedy"
+            asr_model.cfg.decoding.model_type = "tdt"
+            asr_model.change_decoding_strategy(asr_model.cfg.decoding)
 
             transcriptions = asr_model.transcribe(
                 audio=filepaths,

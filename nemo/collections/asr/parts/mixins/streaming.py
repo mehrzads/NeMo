@@ -45,6 +45,8 @@ class StreamingEncoder(ABC):
         cache_last_channel=None,
         cache_last_time=None,
         cache_last_channel_len=None,
+        cache_ssm=None,
+        cache_conv=None,
         keep_all_outputs=True,
         drop_extra_pre_encoded=None,
     ):
@@ -65,6 +67,8 @@ class StreamingEncoder(ABC):
             cache_last_channel=cache_last_channel,
             cache_last_time=cache_last_time,
             cache_last_channel_len=cache_last_channel_len,
+            cache_ssm=cache_ssm,
+            cache_conv=cache_conv,
         )
 
         encoder_output = self.streaming_post_process(encoder_output, keep_all_outputs=keep_all_outputs)

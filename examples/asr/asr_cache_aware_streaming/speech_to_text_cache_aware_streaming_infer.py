@@ -136,6 +136,8 @@ def perform_streaming(
                         cache_last_channel_next,
                         cache_last_time_next,
                         cache_last_channel_len,
+                        cache_ssm,
+                        cache_conv,
                         best_hyp,
                     ) = asr_model.conformer_stream_step(
                         processed_signal=processed_signal,
@@ -147,7 +149,7 @@ def perform_streaming(
     else:
         final_offline_tran = None
 
-    cache_last_channel, cache_last_time, cache_last_channel_len = asr_model.encoder.get_initial_cache_state(
+    cache_last_channel, cache_last_time, cache_last_channel_len, cache_ssm, cache_conv = asr_model.encoder.get_initial_cache_state(
         batch_size=batch_size
     )
 
@@ -167,6 +169,8 @@ def perform_streaming(
                         cache_last_channel,
                         cache_last_time,
                         cache_last_channel_len,
+                        cache_ssm,
+                        cache_conv,
                         previous_hypotheses,
                     ) = asr_model.conformer_stream_step(
                         processed_signal=chunk_audio,
@@ -174,6 +178,8 @@ def perform_streaming(
                         cache_last_channel=cache_last_channel,
                         cache_last_time=cache_last_time,
                         cache_last_channel_len=cache_last_channel_len,
+                        cache_ssm=cache_ssm,
+                        cache_conv=cache_conv,
                         keep_all_outputs=streaming_buffer.is_buffer_empty(),
                         previous_hypotheses=previous_hypotheses,
                         previous_pred_out=pred_out_stream,
@@ -402,9 +408,11 @@ def main():
                     pad_and_drop_preencoded=args.pad_and_drop_preencoded,
                 )
                 all_streaming_tran.extend(streaming_tran)
-                if args.compare_vs_offline:
+                if args.compare_vs_offline:        
                     all_offline_tran.extend(offline_tran)
                 streaming_buffer.reset_buffer()
+
+        
 
         if args.compare_vs_offline and len(all_refs_text) == len(all_offline_tran):
             offline_wer = word_error_rate(hypotheses=all_offline_tran, references=all_refs_text)

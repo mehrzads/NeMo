@@ -122,7 +122,7 @@ model:
     d_conv: 4
     mlp_ratio: 2
     gated_mlp: true
-    mamba_vision: true
+    mamba_vision: false
 
     # Sub-sampling params
     subsampling: dw_striding # vggnet, striding, stacking or stacking_norm, dw_striding

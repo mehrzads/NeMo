@@ -173,7 +173,7 @@ class ZilantEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             input_example_length = torch.randint(
                 window_size // 4, window_size, (max_batch,), device=dev, dtype=torch.int64
             )
-            cache_last_channel, cache_last_time, cache_last_channel_len = self.get_initial_cache_state(
+            cache_last_channel, cache_last_time, cache_last_channel_len, cache_ssm, cache_conv = self.get_initial_cache_state(
                 batch_size=max_batch, device=dev, max_dim=max_dim
             )
             all_input_example = tuple(
@@ -183,6 +183,8 @@ class ZilantEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                     cache_last_channel.transpose(0, 1),
                     cache_last_time.transpose(0, 1),
                     cache_last_channel_len,
+                    cache_ssm,
+                    cache_conv,
                 ]
             )
         else:
@@ -202,6 +204,8 @@ class ZilantEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 "cache_last_channel": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),
                 "cache_last_time": NeuralType(('D', 'B', 'D', 'T'), ChannelType(), optional=True),
                 "cache_last_channel_len": NeuralType(tuple('B'), LengthsType(), optional=True),
+                "cache_ssm": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),
+                "cache_conv": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),            
             }
         )
 
@@ -215,6 +219,8 @@ class ZilantEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 "cache_last_channel": NeuralType(('B', 'D', 'T', 'D'), ChannelType(), optional=True),
                 "cache_last_time": NeuralType(('B', 'D', 'D', 'T'), ChannelType(), optional=True),
                 "cache_last_channel_len": NeuralType(tuple('B'), LengthsType(), optional=True),
+                "cache_ssm": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),
+                "cache_conv": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),
             }
         )
 
@@ -228,6 +234,8 @@ class ZilantEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 "cache_last_channel_next": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),
                 "cache_last_time_next": NeuralType(('D', 'B', 'D', 'T'), ChannelType(), optional=True),
                 "cache_last_channel_next_len": NeuralType(tuple('B'), LengthsType(), optional=True),
+                "cache_ssm": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),
+                "cache_conv": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),
             }
         )
 
@@ -241,6 +249,7 @@ class ZilantEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 "cache_last_channel_next": NeuralType(('B', 'D', 'T', 'D'), ChannelType(), optional=True),
                 "cache_last_time_next": NeuralType(('B', 'D', 'D', 'T'), ChannelType(), optional=True),
                 "cache_last_channel_next_len": NeuralType(tuple('B'), LengthsType(), optional=True),
+                "cache_ssm": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),
             }
         )
 
@@ -254,7 +263,7 @@ class ZilantEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
     @property
     def disabled_deployment_output_names(self):
         if not self.export_cache_support:
-            return set(["cache_last_channel_next", "cache_last_time_next", "cache_last_channel_next_len"])
+            return set(["cache_last_channel_next", "cache_last_time_next", "cache_last_channel_next_len", "cache_ssm", "cache_conv"])
         else:
             return set()
 
@@ -307,6 +316,9 @@ class ZilantEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         self.d_model = d_model
         self.n_layers = n_layers
         self._feat_in = feat_in
+        self.d_state = d_state
+        self.d_conv= d_conv
+        self.expand = expand
         self.att_context_style = att_context_style
         self.subsampling_factor = subsampling_factor
         self.subsampling_conv_chunking_factor = subsampling_conv_chunking_factor
@@ -464,7 +476,7 @@ class ZilantEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         self.interctc_capture_at_layers = None
 
     def forward_for_export(
-        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
+        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None, cache_ssm=None, cache_conv=None,
     ):
         if cache_last_channel is not None:
             cache_last_channel = cache_last_channel.transpose(0, 1)
@@ -476,6 +488,8 @@ class ZilantEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             cache_last_channel=cache_last_channel,
             cache_last_time=cache_last_time,
             cache_last_channel_len=cache_last_channel_len,
+            cache_ssm=cache_ssm,
+            cache_conv=cache_conv,
         )
         rets = self.streaming_post_process(rets, keep_all_outputs=False)
         if len(rets) == 2:
@@ -489,13 +503,15 @@ class ZilantEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 rets[2].transpose(0, 1),
                 rets[3].transpose(0, 1),
                 rets[4],
+                rets[5],
+                rets[6],
             )
 
     def streaming_post_process(self, rets, keep_all_outputs=True):
         if len(rets) == 2:
-            return rets[0], rets[1], None, None, None
+            return rets[0], rets[1], None, None, None, None, None
 
-        (encoded, encoded_len, cache_last_channel_next, cache_last_time_next, cache_last_channel_next_len) = rets
+        (encoded, encoded_len, cache_last_channel_next, cache_last_time_next, cache_last_channel_next_len, cache_ssm, cache_conv) = rets
 
         if cache_last_channel_next is not None and self.streaming_cfg.last_channel_cache_size >= 0:
             if self.streaming_cfg.last_channel_cache_size > 0:
@@ -507,11 +523,11 @@ class ZilantEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             encoded = encoded[:, :, : self.streaming_cfg.valid_out_len]
             encoded_len = torch.clamp(encoded_len, max=self.streaming_cfg.valid_out_len)
 
-        return (encoded, encoded_len, cache_last_channel_next, cache_last_time_next, cache_last_channel_next_len)
+        return (encoded, encoded_len, cache_last_channel_next, cache_last_time_next, cache_last_channel_next_len, cache_ssm, cache_conv)
 
     @typecheck()
     def forward(
-        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
+        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None, cache_ssm=None, cache_conv=None
     ):
         self.update_max_seq_length(seq_length=audio_signal.size(2), device=audio_signal.device)
         return self.forward_internal(
@@ -520,10 +536,12 @@ class ZilantEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             cache_last_channel=cache_last_channel,
             cache_last_time=cache_last_time,
             cache_last_channel_len=cache_last_channel_len,
+            cache_ssm=cache_ssm,
+            cache_conv=cache_conv,
         )
 
     def forward_internal(
-        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
+        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None, cache_ssm=None, cache_conv=None
     ):
         if length is None:
             length = audio_signal.new_full(
@@ -583,15 +601,21 @@ class ZilantEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             # Convert caches from the tensor to list
             cache_last_time_next = []
             cache_last_channel_next = []
+            cache_ssm_next =[]
+            cache_conv_next =[]
 
         for lth, (drop_prob, layer) in enumerate(zip(self.layer_drop_probs, self.layers)):
             original_signal = audio_signal
             if cache_last_channel is not None:
                 cache_last_channel_cur = cache_last_channel[lth]
                 cache_last_time_cur = cache_last_time[lth]
+                cache_ssm_cur = cache_ssm[lth]
+                cache_conv_cur = cache_conv[lth]
             else:
                 cache_last_channel_cur = None
                 cache_last_time_cur = None
+                cache_ssm_cur = None
+                cache_conv_cur= None
             audio_signal = layer(
                 x=audio_signal,
                 att_mask=att_mask,
@@ -599,12 +623,17 @@ class ZilantEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 pad_mask=pad_mask,
                 cache_last_channel=cache_last_channel_cur,
                 cache_last_time=cache_last_time_cur,
+                cache_ssm=cache_ssm_cur,
+                cache_conv=cache_conv_cur,
             )
 
             if cache_last_channel_cur is not None:
-                (audio_signal, cache_last_channel_cur, cache_last_time_cur) = audio_signal
+                (audio_signal, cache_last_channel_cur, cache_last_time_cur, cache_ssm_cur, cache_conv_cur) = audio_signal
                 cache_last_channel_next.append(cache_last_channel_cur)
                 cache_last_time_next.append(cache_last_time_cur)
+                cache_ssm_next.append(cache_ssm_cur)
+                cache_conv_next.append(cache_conv_cur)
+
 
             # applying stochastic depth logic from https://arxiv.org/abs/2102.03216
             if self.training and drop_prob > 0.0:
@@ -660,12 +689,16 @@ class ZilantEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         if cache_last_channel is not None:
             cache_last_channel_next = torch.stack(cache_last_channel_next, dim=0)
             cache_last_time_next = torch.stack(cache_last_time_next, dim=0)
+            cache_ssm = torch.stack(cache_ssm_next, dim=0)
+            cache_conv = torch.stack(cache_conv_next, dim=0)
             return (
                 audio_signal,
                 length,
                 cache_last_channel_next,
                 cache_last_time_next,
                 torch.clamp(cache_last_channel_len + cache_keep_size, max=cache_len),
+                cache_ssm,
+                cache_conv,
             )
         else:
             return audio_signal, length
@@ -950,7 +983,22 @@ class ZilantEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                     cache_last_time[:, i, :, :] = 0
         else:
             cache_last_channel_len = torch.zeros(batch_size, device=device, dtype=torch.int64)
-        return cache_last_channel, cache_last_time, cache_last_channel_len
+        
+        d_inner = int(self.expand * self.d_model)
+        cache_ssm = torch.zeros(len(self.layers),
+                batch_size,
+                d_inner,
+                self.d_state,
+                device=device,
+        )
+
+        cache_conv = torch.zeros(len(self.layers),
+                batch_size,
+                d_inner,
+                self.d_conv,
+                device=device,
+        )
+        return cache_last_channel, cache_last_time, cache_last_channel_len, cache_ssm, cache_conv
 
     def change_attention_model(
         self,
@@ -1171,7 +1219,7 @@ class ZilantMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin):
         self.aggregator = aggregator
 
     def forward(
-        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
+        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None, cache_ssm=None, cache_conv=None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         old_access_flag = self.is_access_enabled(guid=getattr(self, "model_guid", None))
         self.update_access_cfg(self.enc_access_cfg, guid=getattr(self, "model_guid", None))
@@ -1183,6 +1231,8 @@ class ZilantMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin):
             cache_last_channel=cache_last_channel,
             cache_last_time=cache_last_time,
             cache_last_channel_len=cache_last_channel_len,
+            cache_ssm=cache_ssm,
+            cache_conv=cache_conv,
         )
 
         ### chunk of code adapted from ConformerEncoder.forward_internal()
