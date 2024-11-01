@@ -127,6 +127,7 @@ model:
     d_state: 16
     d_conv: 4
     mlp_ratio: 2
+    mamba_conv_causal: False
     gated_mlp: true
     mamba_vision: true 
 
