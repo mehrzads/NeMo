@@ -72,7 +72,8 @@ class ZilantLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         n_heads=4,
         expand=2,
         d_state=16,
-        d_conv=4,        
+        d_conv=4,      
+        causal = True,  
         mamba_vision = True,        
         gated_mlp = True,
         mlp_ratio=2,
@@ -155,7 +156,7 @@ class ZilantLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         self.dropout = nn.Dropout(dropout)
         self.norm_out = LayerNorm(d_model)
         model_name = "MambaVision" if mamba_vision else "Mamba1"
-        ssm_cfg = {"expand": expand, "d_state": d_state, "d_conv": d_conv, "layer": model_name}
+        ssm_cfg = {"expand": expand, "d_state": d_state, "d_conv": d_conv, "layer": model_name, "causal": causal}
         attn_cfg ={"num_heads": n_heads}
         d_intermediate = 0
         #d_model
@@ -172,7 +173,7 @@ class ZilantLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
                     gated_mlp = gated_mlp,
                     mlp_ratio = mlp_ratio,
                     fc_factor  = 1,
-                    rms_norm=False
+                    rms_norm=False,
                 )                 
 
     def forward(self, x, att_mask=None, pos_emb=None, pad_mask=None, cache_last_channel=None, cache_last_time=None, cache_ssm=None, cache_conv=None):
